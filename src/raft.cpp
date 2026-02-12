@@ -15,7 +15,7 @@ Raft::Raft(const Config &config, MessageQueue<ApplyResult> &ready)
       peer_addrs(config.peer_addrs), dead(false), ready_queue(ready)
   // TODO: add more field if desired
 {
-  // TODO: finish it
+  service_ = std::make_unique<RaftServiceImpl>(this);
 }
 
 Raft::~Raft() { this->stop_server(); }

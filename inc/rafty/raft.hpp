@@ -13,6 +13,7 @@
 #include "common/config.hpp"
 #include "common/logger.hpp"
 #include "toolings/msg_queue.hpp"
+#include "rafty/rpc_service.hpp"
 
 // it will pick up correct header
 // when you generate the grpc proto files
@@ -33,7 +34,7 @@ public:
   // TODO: implement `run`, `propose` and `get_state`
   void run(); /* lab 1 */
   ProposalResult propose(const std::string &data); /* lab 1 */
-  State get_state() const; /* lab 2 */
+  State get_state() const; /* lab 1? */
 
   // lab3: sync propose
   ProposalResult propose_sync(const std::string &data);
@@ -71,6 +72,8 @@ private:
 
   std::unordered_map<uint64_t, RaftServiceStub> peers_;
   std::unique_ptr<Server> server_;
+
+  std::unique_ptr<raftpb::RaftService::Service> service_;
 };
 } // namespace rafty
 
