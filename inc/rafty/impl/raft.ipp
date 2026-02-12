@@ -19,12 +19,10 @@ inline void Raft::start_server() {
   grpc::reflection::InitProtoReflectionServerBuilderPlugin();
 
   ServerBuilder builder;
-  builder.AddListeningPort(this->listening_addr,
-                           grpc::InsecureServerCredentials());
+  builder.AddListeningPort(this->listening_addr, grpc::InsecureServerCredentials());
 
 #ifdef TRACING
-  builder.experimental().SetInterceptorCreators(
-      tracing::CreateServerTracingInterceptors());
+  builder.experimental().SetInterceptorCreators(tracing::CreateServerTracingInterceptors());
 #endif
 
   // TODO: implement RaftService RPC
@@ -37,7 +35,7 @@ inline void Raft::start_server() {
   this->server_ = std::move(server);
 
   std::thread([this] { this->server_->Wait(); }).detach();
-} 
+}
 
 inline void Raft::stop_server() {
   if (this->server_) {
@@ -56,35 +54,32 @@ inline void Raft::connect_peers() {
               50); // 100ms initial backoff
 
   for (const auto &peer_addr : peer_addrs) {
-    logger->info("Connecting to peer {} at {}", peer_addr.first,
-                 peer_addr.second);
-    std::vector<std::unique_ptr<ClientInterceptorFactoryInterface>>
-        interceptor_creators;
-    interceptor_creators.push_back(
-        std::make_unique<ByteCountingInterceptorFactory>());
+    logger->info("Connecting to peer {} at {}", peer_addr.first, peer_addr.second);
+    std::vector<std::unique_ptr<ClientInterceptorFactoryInterface>> interceptor_creators;
+    interceptor_creators.push_back(std::make_unique<ByteCountingInterceptorFactory>());
     interceptor_creators.push_back(std::make_unique<NetInterceptorFactory>());
 #ifdef TRACING
     interceptor_creators.push_back(std::make_unique<tracing::TracingClientInterceptorFactory>());
 #endif
-    auto channel = CreateCustomChannelWithInterceptors(
-        peer_addr.second, grpc::InsecureChannelCredentials(), args,
-        std::move(interceptor_creators));
+    auto channel =
+        CreateCustomChannelWithInterceptors(peer_addr.second, grpc::InsecureChannelCredentials(),
+                                            args, std::move(interceptor_creators));
     auto stub = raftpb::RaftService::NewStub(std::move(channel));
     peers_[peer_addr.first] = std::move(stub);
   }
 }
 
-inline bool Raft::is_dead() const { return this->dead.load(); }
+inline bool Raft::is_dead() const {
+  return this->dead.load();
+}
 
 inline void Raft::kill() {
   this->dead.store(true);
   // add your code here if needed.
 }
 
-inline std::unique_ptr<grpc::ClientContext>
-Raft::create_context(uint64_t to) const {
-  std::unique_ptr<grpc::ClientContext> context =
-      std::make_unique<grpc::ClientContext>();
+inline std::unique_ptr<grpc::ClientContext> Raft::create_context(uint64_t to) const {
+  std::unique_ptr<grpc::ClientContext> context = std::make_unique<grpc::ClientContext>();
   context->AddMetadata("from", std::to_string(this->id));
   context->AddMetadata("to", std::to_string(to));
   return context;

@@ -32,9 +32,9 @@ public:
 
   // WARN: do not modify the signature
   // TODO: implement `run`, `propose` and `get_state`
-  void run(); /* lab 1 */
+  void run();                                      /* lab 1 */
   ProposalResult propose(const std::string &data); /* lab 1 */
-  State get_state() const; /* lab 1? */
+  State get_state() const;                         /* lab 1? */
 
   // lab3: sync propose
   ProposalResult propose_sync(const std::string &data);

@@ -13,12 +13,14 @@ using grpc::experimental::CreateCustomChannelWithInterceptors;
 Raft::Raft(const Config &config, MessageQueue<ApplyResult> &ready)
     : logger(utils::logger::get_logger(config.id)), id(config.id), listening_addr(config.addr),
       peer_addrs(config.peer_addrs), dead(false), ready_queue(ready)
-  // TODO: add more field if desired
+// TODO: add more field if desired
 {
   service_ = std::make_unique<RaftServiceImpl>(this);
 }
 
-Raft::~Raft() { this->stop_server(); }
+Raft::~Raft() {
+  this->stop_server();
+}
 
 void Raft::run() {
   // TODO: kick off the raft instance
