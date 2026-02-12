@@ -21,6 +21,8 @@
 
 using namespace toolings;
 
+enum class Role { Follower, Candidate, Leader };
+
 namespace rafty {
 using RaftServiceStub = std::unique_ptr<raftpb::RaftService::Stub>;
 using grpc::Server;
@@ -74,6 +76,24 @@ private:
   std::unique_ptr<Server> server_;
 
   std::unique_ptr<raftpb::RaftService::Service> service_;
+
+  void timer_loop_();
+
+  uint64_t current_term_ = 0;
+  std::optional<uint64_t> voted_for_;
+
+  Role role_ = Role::Follower;
+
+  std::chrono::milliseconds heartbeat_interval_{100};
+  std::chrono::milliseconds election_timeout_min_{150};
+  std::chrono::milliseconds election_timeout_max_{300};
+
+  std::chrono::steady_clock::time_point last_heartbeat_received_;
+
+  std::atomic<bool> running_{false};
+  std::atomic<bool> stop_{false};
+  std::condition_variable timer_cv_;
+  std::thread background_;
 };
 } // namespace rafty
 
