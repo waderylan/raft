@@ -1,13 +1,37 @@
 #include "rafty/rpc_service.hpp"
+#include "rafty/raft.hpp"
+
+#include <grpcpp/grpcpp.h>
+
+#include <mutex>
+#include <chrono>
 
 namespace rafty {
 
-grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext *context,
+grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext*,
                                             const raftpb::AppendEntriesRequest *req,
                                             raftpb::AppendEntriesReply *rep) {
+  std::lock_guard<std::mutex> lock(raft_->mtx);
 
-  // Temporary
-  rep->set_term(req->term());
+  if (req->term() < raft_->current_term_) {
+    rep->set_term(raft_->current_term_);
+    rep->set_success(false);
+    return grpc::Status::OK;
+  }
+
+  if (req->term() > raft_->current_term_) {
+    raft_->logger->info("Heartbeat recieved: from leader={} req_term={} my_term={}",
+                      req->leaderid(), req->term(), raft_->current_term_);
+
+    raft_->current_term_ = req->term();
+    raft_->voted_for_.reset();
+  }
+
+  raft_->role_ = Role::Follower;
+  raft_->last_heartbeat_received_ = std::chrono::steady_clock::now();
+  raft_->timer_cv_.notify_all();
+
+  rep->set_term(raft_->current_term_);
   rep->set_success(true);
   return grpc::Status::OK;
 }

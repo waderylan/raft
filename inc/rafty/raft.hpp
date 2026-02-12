@@ -6,6 +6,12 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <chrono>
+#include <condition_variable>
+#include <optional>
+#include <thread>
+#include <map>
+#include <random>
 
 #include <grpcpp/grpcpp.h>
 
@@ -56,12 +62,18 @@ private:
   std::unique_ptr<grpc::ClientContext> create_context(uint64_t to) const;
   void apply(const ApplyResult &result);
 
+  void timer_loop_();
+  std::chrono::milliseconds rand_election_timeout_() const;
+  void send_heartbeats_();
+
 protected:
   // WARN: do not modify `mtx` and `logger`.
   mutable std::mutex mtx;
   std::unique_ptr<rafty::utils::logger> logger;
 
 private:
+  friend class RaftServiceImpl;
+
   // WARN: do not modify the declaration of
   // `id`, `listening_addr`, `peer_addrs`,
   // `dead`, `ready_queue`, `peers_`, and `server_`.
@@ -77,8 +89,6 @@ private:
 
   std::unique_ptr<raftpb::RaftService::Service> service_;
 
-  void timer_loop_();
-
   uint64_t current_term_ = 0;
   std::optional<uint64_t> voted_for_;
 
@@ -89,6 +99,8 @@ private:
   std::chrono::milliseconds election_timeout_max_{300};
 
   std::chrono::steady_clock::time_point last_heartbeat_received_;
+  std::chrono::steady_clock::time_point last_heartbeat_sent_;
+  std::chrono::steady_clock::time_point next_heartbeat_deadline_;
 
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_{false};

@@ -1,4 +1,6 @@
 #include "common/utils/rand_gen.hpp"
+#include <chrono>
+#include <mutex>
 #include "rafty/raft.hpp"
 #ifdef TRACING
 #include "common/utils/tracing.hpp"
@@ -35,12 +37,20 @@ void Raft::run() {
   }
 
   stop_.store(false);
-
   {
     std::lock_guard<std::mutex> lock(mtx);
-    last_heartbeat_received_ = std::chrono::steady_clock::now();
-  }
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    last_heartbeat_received_ = now;
+    next_heartbeat_deadline_ = now + heartbeat_interval_;
+    last_heartbeat_sent_ = now;
 
+    // Testing only. Trying to make something happen
+    if (id == 0) {
+      role_ = Role::Leader;
+      current_term_ = 1;
+      next_heartbeat_deadline_ = std::chrono::steady_clock::now(); // send ASAP
+    }
+  }
   background_ = std::thread([this] { this->timer_loop_(); });
 }
 
@@ -59,16 +69,66 @@ ProposalResult Raft::propose_sync(const std::string &data) {
 void Raft::timer_loop_() {
   std::unique_lock<std::mutex> lock(mtx);
 
+  std::chrono::milliseconds timeout = rand_election_timeout_();
+  std::chrono::steady_clock::time_point election_deadline = last_heartbeat_received_ + timeout;
+
   while (!dead.load() && !stop_.load()) {
 
-    auto election_deadline = last_heartbeat_received_ + election_timeout_min_;
+    if (role_ == Role::Leader) {
+      timer_cv_.wait_until(lock, next_heartbeat_deadline_);
 
-    timer_cv_.wait_until(lock, election_deadline);
+      if (dead.load() || stop_.load()) {
+        break;
+      }
 
-    if (dead.load() || stop_.load()) {
-      break;
+      // Check if lost leader status while sleeping
+      if (role_ != Role::Leader) {
+        timeout = rand_election_timeout_();
+        election_deadline = last_heartbeat_received_ + timeout;
+        continue;
+      }
+
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+      if (now >= next_heartbeat_deadline_) {
+        next_heartbeat_deadline_ = now + heartbeat_interval_;
+
+        lock.unlock();
+        send_heartbeats_();
+        lock.lock();
+      }
+
+    } else {
+
+      timer_cv_.wait_until(lock, election_deadline);
+
+      if (dead.load() || stop_.load()) {
+        break;
+      }
+
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+
+      // If we became leader while sleeping, send heartbeat ASAP
+      if (role_ == Role::Leader) {
+        next_heartbeat_deadline_ = now;
+        continue;
+      }
+
+      if (now >= election_deadline) {
+        logger->info("Election timeout reached (term={})", current_term_);
+
+        // Reset baseline and choose a new random timeout window
+        last_heartbeat_received_ = now;
+        timeout = rand_election_timeout_();
+        election_deadline = now + timeout;
+
+      } else {
+        election_deadline = last_heartbeat_received_ + timeout;
+      }
+
     }
+    
 
+    
     auto now = std::chrono::steady_clock::now();
 
     if (now > election_deadline) {
@@ -76,6 +136,66 @@ void Raft::timer_loop_() {
 
       last_heartbeat_received_ = now;
     }
+  }
+}
+
+std::chrono::milliseconds Raft::rand_election_timeout_() const {
+  thread_local std::mt19937_64 rng{std::random_device{}()};
+
+  std::uniform_int_distribution<int64_t> dist(election_timeout_min_.count(),
+                                              election_timeout_max_.count());
+
+  return std::chrono::milliseconds(dist(rng));
+}
+
+void Raft::send_heartbeats_() {
+  uint64_t term = 0;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (role_ != Role::Leader) {
+      return;
+    }
+    term = current_term_;
+  }
+
+  logger->info("Heartbeat send: term={} to {} peers", term, peers_.size());
+
+  for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
+    const uint64_t peer_id = peer.first;
+
+    raftpb::AppendEntriesRequest req;
+    req.set_term(term);
+    req.set_leaderid(id);
+    req.set_prevlogindex(0);
+    req.set_prevlogterm(0);
+    req.set_leadercommit(0);
+
+    raftpb::AppendEntriesReply resp;
+
+    std::unique_ptr<grpc::ClientContext> ctx = this->create_context(peer_id);
+    grpc::Status status = peers_[peer_id]->AppendEntries(ctx.get(), req, &resp);
+
+    if (!status.ok()) {
+      continue;
+    }
+
+    if (resp.term() > term) {
+      // Response has higher term, stand down
+      std::lock_guard<std::mutex> lock(mtx);
+      if (resp.term() > current_term_) {
+        current_term_ = resp.term();
+        role_ = Role::Follower;
+        voted_for_.reset();
+        last_heartbeat_received_ = std::chrono::steady_clock::now();
+        timer_cv_.notify_all();
+      }
+      return;
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    last_heartbeat_sent_ = std::chrono::steady_clock::now();
   }
 }
 

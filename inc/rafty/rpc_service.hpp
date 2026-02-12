@@ -1,3 +1,5 @@
+#pragma once
+
 #include <grpcpp/grpcpp.h>
 #include "raft.grpc.pb.h"
 
