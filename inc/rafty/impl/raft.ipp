@@ -75,7 +75,8 @@ inline bool Raft::is_dead() const {
 
 inline void Raft::kill() {
   this->dead.store(true);
-  // add your code here if needed.
+  stop_.store(true);
+  timer_cv_.notify_all();
 }
 
 inline std::unique_ptr<grpc::ClientContext> Raft::create_context(uint64_t to) const {

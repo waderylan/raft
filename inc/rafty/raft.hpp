@@ -65,6 +65,9 @@ private:
   void timer_loop_();
   std::chrono::milliseconds rand_election_timeout_() const;
   void send_heartbeats_();
+  void become_follower_(uint64_t new_term);
+  void start_election_();
+  void become_leader_();
 
 protected:
   // WARN: do not modify `mtx` and `logger`.
@@ -91,6 +94,8 @@ private:
 
   uint64_t current_term_ = 0;
   std::optional<uint64_t> voted_for_;
+  uint64_t votes_received_ = 0;
+  uint64_t required_majority_ = 0;
 
   Role role_ = Role::Follower;
 
