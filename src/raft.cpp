@@ -58,7 +58,13 @@ void Raft::run() {
 }
 
 State Raft::get_state() const {
-  // TODO: lab 1
+  // lab 1
+  std::lock_guard<std::mutex> lock(mtx);
+
+  State s{};
+  s.term = current_term_;
+  s.is_leader = (role_ == Role::Leader);
+  return s;
 }
 
 ProposalResult Raft::propose(const std::string &data) {
