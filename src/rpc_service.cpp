@@ -20,9 +20,6 @@ grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext*,
   }
 
   if (req->term() > raft_->current_term_) {
-    raft_->logger->info("Heartbeat recieved: from leader={} req_term={} my_term={}",
-                      req->leaderid(), req->term(), raft_->current_term_);
-
     raft_->current_term_ = req->term();
     raft_->voted_for_.reset();
   }
@@ -30,6 +27,10 @@ grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext*,
   raft_->role_ = Role::Follower;
   raft_->last_heartbeat_received_ = std::chrono::steady_clock::now();
   raft_->timer_cv_.notify_all();
+
+  raft_->logger->info("Heartbeat received: from leader={} req_term={} my_term={}",
+                    req->leaderid(), req->term(), raft_->current_term_);
+
 
   rep->set_term(raft_->current_term_);
   rep->set_success(true);

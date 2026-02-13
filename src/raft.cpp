@@ -74,6 +74,11 @@ void Raft::timer_loop_() {
 
   while (!dead.load() && !stop_.load()) {
 
+    logger->info("TIMER: role={} term={}",
+             (role_==Role::Leader ? "L" : (role_==Role::Candidate ? "C" : "F")),
+             current_term_);
+
+
     if (role_ == Role::Leader) {
       timer_cv_.wait_until(lock, next_heartbeat_deadline_);
 
@@ -95,6 +100,11 @@ void Raft::timer_loop_() {
         lock.unlock();
         send_heartbeats_();
         lock.lock();
+
+        std::chrono::steady_clock::time_point now2 = std::chrono::steady_clock::now();
+        last_heartbeat_received_ = now2;
+        timeout = rand_election_timeout_();
+        election_deadline = last_heartbeat_received_ + timeout;
       }
 
     } else {
