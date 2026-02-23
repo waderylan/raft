@@ -1,4 +1,5 @@
 
+#include <signal.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -467,4 +468,44 @@ TEST_F(RaftTest, 5854395979_4945749684_UniqueLeaderOverTimeA) {
     logger->error("Exception: {}", e.what());
     FAIL() << "Exception: " << e.what();
   }
+}
+
+static pid_t pgid;
+
+static void signal_handler(int signum) {
+  killpg(pgid, SIGKILL);
+  _exit(1);
+}
+
+int main(int argc, char **argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  absl::ParseCommandLine(argc, argv);
+
+  ddb_conf = {
+      .enable_ddb = absl::GetFlag(FLAGS_ddb),
+      .ddb_host_ip = absl::GetFlag(FLAGS_ddb_host_ip),
+      .wait_for_attach = absl::GetFlag(FLAGS_wait_for_attach),
+      .ddb_app_wrapper = absl::GetFlag(FLAGS_ddb_app_wrapper),
+  };
+
+  if (absl::GetFlag(FLAGS_ddb)) {
+    std::string app_alias = "raft_test_app";
+    auto cfg = DDB::Config::get_default(absl::GetFlag(FLAGS_ddb_host_ip))
+                   .with_alias(app_alias)
+                   .with_logical_group(app_alias);
+    cfg.wait_for_attach = absl::GetFlag(FLAGS_wait_for_attach);
+    auto connector = DDB::DDBConnector(cfg);
+    connector.init();
+  }
+
+  rafty::utils::init_logger();
+
+  pgid = getpid();
+  struct sigaction sigIntHandler;
+  sigIntHandler.sa_handler = signal_handler;
+  sigemptyset(&sigIntHandler.sa_mask);
+  sigIntHandler.sa_flags = 0;
+  sigaction(SIGINT, &sigIntHandler, nullptr);
+
+  return RUN_ALL_TESTS();
 }

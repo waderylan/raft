@@ -111,7 +111,7 @@ void Raft::timer_loop_() {
       }
 
     } else {
-
+      election_deadline = last_heartbeat_received_ + timeout;
       timer_cv_.wait_until(lock, election_deadline);
 
       if (dead.load() || stop_.load()) {
