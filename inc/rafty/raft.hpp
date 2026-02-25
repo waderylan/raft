@@ -80,33 +80,46 @@ private:
   // WARN: do not modify the declaration of
   // `id`, `listening_addr`, `peer_addrs`,
   // `dead`, `ready_queue`, `peers_`, and `server_`.
+
+  // node identity
   uint64_t id;
   std::string listening_addr;
   std::map<uint64_t, std::string> peer_addrs;
 
+  // infastructure
   std::atomic<bool> dead;
   MessageQueue<ApplyResult> &ready_queue;
-
   std::unordered_map<uint64_t, RaftServiceStub> peers_;
   std::unique_ptr<Server> server_;
-
   std::unique_ptr<raftpb::RaftService::Service> service_;
 
+  // persistent state
   uint64_t current_term_ = 0;
-  std::optional<uint64_t> voted_for_;
-  uint64_t votes_received_ = 0;
-  uint64_t required_majority_ = 0;
+  std::optional<uint64_t> voted_for_;  // peer id this node voted for
+  std::vector<raftpb::Entry> log_;
 
+  // election state
+  uint64_t votes_received_ = 0;
+  uint64_t required_majority_ = 0;  // number of votes needed to win election
   Role role_ = Role::Follower;
 
+  // all-server volatile state
+  uint64_t commit_index_ = 0;  // highest entry known to be committed
+  uint64_t last_applied_ = 0;  // highest entry applied to state machine
+
+  // leader-only volatile state (reinitialized after election)
+  std::unordered_map<uint64_t, uint64_t> next_index_;  // per peer, what index to send next
+  std::unordered_map<uint64_t, uint64_t> match_index_;  // per peer, what index is confirmed replicated
+
+  // timing
   std::chrono::milliseconds heartbeat_interval_{100};
   std::chrono::milliseconds election_timeout_min_{150};
   std::chrono::milliseconds election_timeout_max_{300};
-
   std::chrono::steady_clock::time_point last_heartbeat_received_;
   std::chrono::steady_clock::time_point last_heartbeat_sent_;
   std::chrono::steady_clock::time_point next_heartbeat_deadline_;
 
+  // threading
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_{false};
   std::condition_variable timer_cv_;

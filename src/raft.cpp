@@ -1,3 +1,4 @@
+#include "common/common.hpp"
 #include "common/utils/rand_gen.hpp"
 #include "raft.pb.h"
 #include <chrono>
@@ -20,6 +21,12 @@ Raft::Raft(const Config &config, MessageQueue<ApplyResult> &ready)
 {
   service_ = std::make_unique<RaftServiceImpl>(this);
   required_majority_ = (static_cast<uint64_t>(peer_addrs.size()) + 1) / 2 + 1;
+
+  // Add an empty entry to the log so it can start at index 1
+  raftpb::Entry dummy;
+  dummy.set_term(0);
+  dummy.set_command("");
+  log_.push_back(dummy);
 }
 
 Raft::~Raft() {
@@ -68,7 +75,30 @@ State Raft::get_state() const {
 }
 
 ProposalResult Raft::propose(const std::string &data) {
-  // TODO: lab 2
+  // lab 2
+  std::lock_guard<std::mutex> lock(mtx);
+
+  ProposalResult result;
+  result.is_leader  = (role_ == Role::Leader);
+
+  if (!result.is_leader) {
+    // in real-world implementation this would forward to a leader
+    logger->info("Propose rejected: id={} not leader (term={})", id, current_term_);
+    result.term = current_term_;
+    result.index = 0;
+    return result;
+  }
+
+  raftpb::Entry entry;
+  entry.set_term(current_term_);
+  entry.set_command(data);
+  log_.push_back(entry);
+
+  result.term = current_term_;
+  result.index = log_.size() - 1;
+
+  logger->info("Proposed: id={} index={} term={} data={}", id, result.index, result.term, data);
+  return result;
 }
 
 ProposalResult Raft::propose_sync(const std::string &data) {
@@ -166,15 +196,38 @@ void Raft::send_heartbeats_() {
   for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
     const uint64_t peer_id = peer.first;
 
+    uint64_t next_idx = 0;
+    uint64_t prev_log_index = 0;
+    uint64_t prev_log_term = 0;
+    uint64_t leader_commit = 0;
+
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      if (role_ != Role::Leader) {
+          return;
+      }
+      next_idx = next_index_[peer_id];
+      prev_log_index = next_idx - 1;
+      prev_log_term = log_[prev_log_index].term();
+      leader_commit = commit_index_;
+    }
+
     raftpb::AppendEntriesRequest req;
     req.set_term(term);
     req.set_leaderid(id);
-    req.set_prevlogindex(0);
-    req.set_prevlogterm(0);
-    req.set_leadercommit(0);
+    req.set_prevlogindex(prev_log_index);
+    req.set_prevlogterm(prev_log_term);
+    req.set_leadercommit(leader_commit);
+
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      for (uint64_t i = next_idx; i < log_.size(); i++) {
+          raftpb::Entry* entry = req.add_entries();
+          *entry = log_[i];
+      }
+    }
 
     raftpb::AppendEntriesReply resp;
-
     std::unique_ptr<grpc::ClientContext> ctx = this->create_context(peer_id);
     grpc::Status status = peers_[peer_id]->AppendEntries(ctx.get(), req, &resp);
 
@@ -194,8 +247,31 @@ void Raft::send_heartbeats_() {
       }
       return;
     }
-  }
 
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      
+      // stale reply check
+      if (role_ != Role::Leader || current_term_ != term) {
+          return;
+      }
+
+      if (resp.success()) {
+          // update next and match index for this peer
+          if (req.entries_size() > 0) {
+            // only if we actually sent data
+            next_index_[peer_id] = next_idx + req.entries_size();
+            match_index_[peer_id] = next_index_[peer_id] - 1;
+          }
+      } else {
+          // log inconsistency, back up one step and retry next heartbeat
+          if (next_index_[peer_id] > 1) {
+              next_index_[peer_id]--;
+          }
+      }
+    }
+  }
+  
   {
     std::lock_guard<std::mutex> lock(mtx);
     last_heartbeat_sent_ = std::chrono::steady_clock::now();
@@ -223,6 +299,12 @@ void Raft::become_leader_() {
 
   role_ = Role::Leader;
   votes_received_ = 0;
+
+  // initialize leader-only volatile state
+  for (const std::pair<const uint64_t, RaftServiceStub>& peer : peers_) {
+    next_index_[peer.first] = log_.size();
+    match_index_[peer.first] = 0;
+  }
 
   next_heartbeat_deadline_ = std::chrono::steady_clock::now(); // send ASAP
   timer_cv_.notify_all();
