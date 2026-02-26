@@ -65,9 +65,8 @@ private:
   void timer_loop_();
   std::chrono::milliseconds rand_election_timeout_() const;
   void send_heartbeats_();
-  void become_follower_(uint64_t new_term);
   void start_election_();
-  void become_leader_();
+  void become_leader_locked_();
 
 protected:
   // WARN: do not modify `mtx` and `logger`.
