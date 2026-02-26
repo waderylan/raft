@@ -94,21 +94,22 @@ private:
 
   // persistent state
   uint64_t current_term_ = 0;
-  std::optional<uint64_t> voted_for_;  // peer id this node voted for
+  std::optional<uint64_t> voted_for_; // peer id this node voted for
   std::vector<raftpb::Entry> log_;
 
   // election state
   uint64_t votes_received_ = 0;
-  uint64_t required_majority_ = 0;  // number of votes needed to win election
+  uint64_t required_majority_ = 0; // number of votes needed to win election
   Role role_ = Role::Follower;
 
   // all-server volatile state
-  uint64_t commit_index_ = 0;  // highest entry known to be committed
-  uint64_t last_applied_ = 0;  // highest entry applied to state machine
+  uint64_t commit_index_ = 0; // highest entry known to be committed
+  uint64_t last_applied_ = 0; // highest entry applied to state machine
 
   // leader-only volatile state (reinitialized after election)
-  std::unordered_map<uint64_t, uint64_t> next_index_;  // per peer, what index to send next
-  std::unordered_map<uint64_t, uint64_t> match_index_;  // per peer, what index is confirmed replicated
+  std::unordered_map<uint64_t, uint64_t> next_index_; // per peer, what index to send next
+  std::unordered_map<uint64_t, uint64_t>
+      match_index_; // per peer, what index is confirmed replicated
 
   // timing
   std::chrono::milliseconds heartbeat_interval_{100};

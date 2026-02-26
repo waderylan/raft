@@ -40,7 +40,6 @@ Raft::~Raft() {
   this->stop_server();
 }
 
-
 void Raft::run() {
   // TODO: kick off the raft instance
   // Note: this function should be non-blocking
@@ -79,7 +78,7 @@ ProposalResult Raft::propose(const std::string &data) {
   std::lock_guard<std::mutex> lock(mtx);
 
   ProposalResult result;
-  result.is_leader  = (role_ == Role::Leader);
+  result.is_leader = (role_ == Role::Leader);
 
   if (!result.is_leader) {
     // in real-world implementation this would forward to a leader
@@ -204,7 +203,7 @@ void Raft::send_heartbeats_() {
     {
       std::lock_guard<std::mutex> lock(mtx);
       if (role_ != Role::Leader) {
-          return;
+        return;
       }
       next_idx = next_index_[peer_id];
       prev_log_index = next_idx - 1;
@@ -222,8 +221,8 @@ void Raft::send_heartbeats_() {
     {
       std::lock_guard<std::mutex> lock(mtx);
       for (uint64_t i = next_idx; i < log_.size(); i++) {
-          raftpb::Entry* entry = req.add_entries();
-          *entry = log_[i];
+        raftpb::Entry *entry = req.add_entries();
+        *entry = log_[i];
       }
     }
 
@@ -250,69 +249,69 @@ void Raft::send_heartbeats_() {
 
     {
       std::unique_lock<std::mutex> lock(mtx);
-      
+
       // stale reply check
       if (role_ != Role::Leader || current_term_ != term) {
-          return;
+        return;
       }
 
       if (resp.success()) {
-          if (req.entries_size() > 0) {
-            // update next and match index for this peer only if we actually sent data
-            next_index_[peer_id] = next_idx + req.entries_size();
-            match_index_[peer_id] = next_index_[peer_id] - 1;
-          }
-    
-          // find highest index replicated on at least the majority of nodes
-          uint64_t new_commit_index = commit_index_;
-          for (uint64_t n = log_.size() - 1; n > commit_index_; n--) {
-            uint64_t replication_count = 1; // count self
+        if (req.entries_size() > 0) {
+          // update next and match index for this peer only if we actually sent data
+          next_index_[peer_id] = next_idx + req.entries_size();
+          match_index_[peer_id] = next_index_[peer_id] - 1;
+        }
 
-            // loop through peers and see who is caught up to n
-            for (const std::pair<const uint64_t, uint64_t>& entry : match_index_) {
-              if (entry.second >= n) {
-                replication_count++;
-              }
-            }
-            // done if we have the majority
-            if (replication_count >= required_majority_) {
-                new_commit_index = n;
-                break;
+        // find highest index replicated on at least the majority of nodes
+        uint64_t new_commit_index = commit_index_;
+        for (uint64_t n = log_.size() - 1; n > commit_index_; n--) {
+          uint64_t replication_count = 1; // count self
+
+          // loop through peers and see who is caught up to n
+          for (const std::pair<const uint64_t, uint64_t> &entry : match_index_) {
+            if (entry.second >= n) {
+              replication_count++;
             }
           }
-
-          // only commit if new_commit_index is newer and belongs to current term
-          if (new_commit_index > commit_index_ && log_[new_commit_index].term() == current_term_) {
-              commit_index_ = new_commit_index;
-
-              // collect all newly committed entries
-              std::vector<ApplyResult> apply_batch;  // so that apply is not called when the lock is held
-              while (last_applied_ < commit_index_) {
-                  last_applied_++;
-
-                  ApplyResult result;
-                  result.valid = true;
-                  result.index = last_applied_;
-                  result.data = log_[last_applied_].command();
-
-                  apply_batch.push_back(result);
-              }
-              // unlock and apply all results in the batch
-              lock.unlock();
-              for (const ApplyResult& result : apply_batch) {
-                  apply(result);
-              }
-              lock.lock();
+          // done if we have the majority
+          if (replication_count >= required_majority_) {
+            new_commit_index = n;
+            break;
           }
+        }
+
+        // only commit if new_commit_index is newer and belongs to current term
+        if (new_commit_index > commit_index_ && log_[new_commit_index].term() == current_term_) {
+          commit_index_ = new_commit_index;
+
+          // collect all newly committed entries
+          std::vector<ApplyResult> apply_batch; // so that apply is not called when the lock is held
+          while (last_applied_ < commit_index_) {
+            last_applied_++;
+
+            ApplyResult result;
+            result.valid = true;
+            result.index = last_applied_;
+            result.data = log_[last_applied_].command();
+
+            apply_batch.push_back(result);
+          }
+          // unlock and apply all results in the batch
+          lock.unlock();
+          for (const ApplyResult &result : apply_batch) {
+            apply(result);
+          }
+          lock.lock();
+        }
       } else {
-          // log inconsistency, back up one step and retry next heartbeat
-          if (next_index_[peer_id] > 1) {
-              next_index_[peer_id]--;
-          }
+        // log inconsistency, back up one step and retry next heartbeat
+        if (next_index_[peer_id] > 1) {
+          next_index_[peer_id]--;
+        }
       }
     }
   }
-  
+
   {
     std::lock_guard<std::mutex> lock(mtx);
     last_heartbeat_sent_ = std::chrono::steady_clock::now();
@@ -324,7 +323,7 @@ void Raft::become_leader_locked_() {
   votes_received_ = 0;
 
   // initialize leader-only volatile state
-  for (const std::pair<const uint64_t, RaftServiceStub>& peer : peers_) {
+  for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
     next_index_[peer.first] = log_.size();
     match_index_[peer.first] = 0;
   }
@@ -338,7 +337,7 @@ void Raft::become_leader_locked_() {
 void Raft::start_election_() {
   uint64_t election_term = 0;
   uint64_t last_log_index = 0;
-  uint64_t last_log_term = 0; 
+  uint64_t last_log_term = 0;
   {
     std::lock_guard<std::mutex> lock(mtx);
 
@@ -379,7 +378,7 @@ void Raft::start_election_() {
     }
 
     {
-      std::unique_lock<std::mutex> lock(mtx);      
+      std::unique_lock<std::mutex> lock(mtx);
       if (role_ != Role::Candidate) {
         continue;
       }

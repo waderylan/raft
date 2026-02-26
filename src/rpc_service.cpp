@@ -10,11 +10,11 @@
 
 namespace rafty {
 
-grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext*,
+grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext *,
                                             const raftpb::AppendEntriesRequest *req,
                                             raftpb::AppendEntriesReply *rep) {
   std::unique_lock<std::mutex> lock(raft_->mtx);
-  
+
   // reject if request term is lower than our term
   if (req->term() < raft_->current_term_) {
     rep->set_term(raft_->current_term_);
@@ -31,14 +31,14 @@ grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext*,
   raft_->last_heartbeat_received_ = std::chrono::steady_clock::now();
   raft_->timer_cv_.notify_all();
 
-  raft_->logger->info("Heartbeat received: from leader={} req_term={} my_term={}",
-                    req->leaderid(), req->term(), raft_->current_term_);
+  raft_->logger->info("Heartbeat received: from leader={} req_term={} my_term={}", req->leaderid(),
+                      req->term(), raft_->current_term_);
 
   rep->set_term(raft_->current_term_);
-  
+
   uint64_t prev_log_index = req->prevlogindex();
-  uint64_t prev_log_term  = req->prevlogterm();
-  
+  uint64_t prev_log_term = req->prevlogterm();
+
   if (prev_log_index >= raft_->log_.size() || prev_log_term != raft_->log_[prev_log_index].term()) {
     rep->set_success(false);
     return grpc::Status::OK;
@@ -67,25 +67,26 @@ grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext*,
 
   // advance commit index to match leader, but cap at last entry we actually received
   if (req->leadercommit() > raft_->commit_index_) {
-      raft_->commit_index_ = std::min(req->leadercommit(), prev_log_index + (uint64_t)req->entries().size());  
+    raft_->commit_index_ =
+        std::min(req->leadercommit(), prev_log_index + (uint64_t)req->entries().size());
   }
 
   // collect all newly committed entries
-  std::vector<ApplyResult> apply_batch;  // so that apply is not called when the lock is held
+  std::vector<ApplyResult> apply_batch; // so that apply is not called when the lock is held
   while (raft_->last_applied_ < raft_->commit_index_) {
-      raft_->last_applied_++;
-      
-      ApplyResult result;
-      result.valid = true;
-      result.index = raft_->last_applied_;
-      result.data = raft_->log_[raft_->last_applied_].command();
+    raft_->last_applied_++;
+
+    ApplyResult result;
+    result.valid = true;
+    result.index = raft_->last_applied_;
+    result.data = raft_->log_[raft_->last_applied_].command();
 
     apply_batch.push_back(result);
   }
 
   // unlock and apply all results in the batch
   lock.unlock();
-  for (const ApplyResult& result : apply_batch) {
+  for (const ApplyResult &result : apply_batch) {
     raft_->apply(result);
   }
 
@@ -115,14 +116,16 @@ grpc::Status RaftServiceImpl::RequestVote(grpc::ServerContext *,
   }
 
   // we can vote if we haven't voted yet or already voted for this candidate
-  const bool can_vote = (!raft_->voted_for_.has_value() || raft_->voted_for_.value() == candidate_id);
+  const bool can_vote =
+      (!raft_->voted_for_.has_value() || raft_->voted_for_.value() == candidate_id);
 
   // candidate log must be at least as up to date as ours
   uint64_t my_last_log_index = raft_->log_.size() - 1;
-  uint64_t my_last_log_term  = raft_->log_[my_last_log_index].term();
-  const bool log_ok = (req->lastlogterm() > my_last_log_term) ||
-                    (req->lastlogterm() == my_last_log_term && req->lastlogindex() >= my_last_log_index);
-  
+  uint64_t my_last_log_term = raft_->log_[my_last_log_index].term();
+  const bool log_ok =
+      (req->lastlogterm() > my_last_log_term) ||
+      (req->lastlogterm() == my_last_log_term && req->lastlogindex() >= my_last_log_index);
+
   if (can_vote && log_ok) {
     raft_->voted_for_ = candidate_id;
 
@@ -132,10 +135,10 @@ grpc::Status RaftServiceImpl::RequestVote(grpc::ServerContext *,
     rep->set_term(raft_->current_term_);
     rep->set_votegranted(true);
 
-    raft_->logger->info("Node {} Voted: candidate={} term={}", raft_->id, candidate_id, raft_->current_term_);
+    raft_->logger->info("Node {} Voted: candidate={} term={}", raft_->id, candidate_id,
+                        raft_->current_term_);
     return grpc::Status::OK;
-  }
-  else {
+  } else {
     rep->set_term(raft_->current_term_);
     rep->set_votegranted(false);
     return grpc::Status::OK;
