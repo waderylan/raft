@@ -108,8 +108,7 @@ private:
 
   // leader-only volatile state (reinitialized after election)
   std::unordered_map<uint64_t, uint64_t> next_index_; // per peer, what index to send next
-  std::unordered_map<uint64_t, uint64_t>
-      match_index_; // per peer, what index is confirmed replicated
+  std::unordered_map<uint64_t, uint64_t> match_index_; // per peer, what index is confirmed replicated
 
   // timing
   std::chrono::milliseconds heartbeat_interval_{100};
