@@ -64,9 +64,9 @@ private:
 
   void timer_loop_();
   std::chrono::milliseconds rand_election_timeout_() const;
-  void send_heartbeats_();
   void start_election_();
   void become_leader_locked_();
+  void peer_replication_loop_(uint64_t peer_id);
 
 protected:
   // WARN: do not modify `mtx` and `logger`.
@@ -123,6 +123,8 @@ private:
   std::atomic<bool> stop_{false};
   std::condition_variable timer_cv_;
   std::thread background_;
+  std::condition_variable peer_cv_;
+  std::unordered_map<uint64_t, std::thread> peer_threads_;
 };
 } // namespace rafty
 

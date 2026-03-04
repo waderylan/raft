@@ -32,9 +32,16 @@ Raft::Raft(const Config &config, MessageQueue<ApplyResult> &ready)
 Raft::~Raft() {
   stop_.store(true);
   timer_cv_.notify_all();
+  peer_cv_.notify_all();
 
   if (background_.joinable()) {
     background_.join();
+  }
+
+  for (std::pair<const uint64_t, std::thread> &entry : peer_threads_) {
+    if (entry.second.joinable()) {
+      entry.second.join();
+    }
   }
 
   this->stop_server();
@@ -61,6 +68,15 @@ void Raft::run() {
     last_heartbeat_sent_ = now;
   }
   background_ = std::thread([this] { this->timer_loop_(); });
+
+  for (const std::pair<const uint64_t, std::string> &entry : peer_addrs) {
+    const uint64_t peer_id = entry.first;
+    peer_threads_[peer_id] = std::thread([this, peer_id] {
+      this->peer_replication_loop_(peer_id);
+    });
+  }
+
+
 }
 
 State Raft::get_state() const {
@@ -95,6 +111,8 @@ ProposalResult Raft::propose(const std::string &data) {
 
   result.term = current_term_;
   result.index = log_.size() - 1;
+
+  peer_cv_.notify_all();
 
   logger->info("Proposed: id={} index={} term={} data={}", id, result.index, result.term, data);
   return result;
@@ -133,9 +151,10 @@ void Raft::timer_loop_() {
       std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
       if (now >= next_heartbeat_deadline_) {
         next_heartbeat_deadline_ = now + heartbeat_interval_;
-
+        
+        last_heartbeat_sent_ = now;
         lock.unlock();
-        send_heartbeats_();
+        peer_cv_.notify_all();
         lock.lock();
       }
 
@@ -180,46 +199,51 @@ std::chrono::milliseconds Raft::rand_election_timeout_() const {
   return std::chrono::milliseconds(dist(rng));
 }
 
-void Raft::send_heartbeats_() {
-  uint64_t term = 0;
+void Raft::peer_replication_loop_(uint64_t peer_id) {
+  raftpb::RaftService::Stub *stub = nullptr;
   {
     std::lock_guard<std::mutex> lock(mtx);
-    if (role_ != Role::Leader) {
-      return;
-    }
-    term = current_term_;
+    stub = peers_[peer_id].get();
   }
 
-  logger->info("Heartbeat send: term={} to {} peers", term, peers_.size());
+  while (!dead.load() && !stop_.load()) {
+    {
+      std::unique_lock<std::mutex> lock(mtx);
+      peer_cv_.wait_for(lock, heartbeat_interval_, [this] {
+        return dead.load() || stop_.load();
+      });
+    }
 
-  for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
-    const uint64_t peer_id = peer.first;
+    if (dead.load() || stop_.load()) {
+      break;
+    }
 
+    uint64_t term = 0;
     uint64_t next_idx = 0;
     uint64_t prev_log_index = 0;
     uint64_t prev_log_term = 0;
     uint64_t leader_commit = 0;
+    raftpb::AppendEntriesRequest req;
 
     {
       std::lock_guard<std::mutex> lock(mtx);
+
       if (role_ != Role::Leader) {
-        return;
+        continue;
       }
+
+      term = current_term_;
       next_idx = next_index_[peer_id];
       prev_log_index = next_idx - 1;
       prev_log_term = log_[prev_log_index].term();
       leader_commit = commit_index_;
-    }
 
-    raftpb::AppendEntriesRequest req;
-    req.set_term(term);
-    req.set_leaderid(id);
-    req.set_prevlogindex(prev_log_index);
-    req.set_prevlogterm(prev_log_term);
-    req.set_leadercommit(leader_commit);
+      req.set_term(term);
+      req.set_leaderid(id);
+      req.set_prevlogindex(prev_log_index);
+      req.set_prevlogterm(prev_log_term);
+      req.set_leadercommit(leader_commit);
 
-    {
-      std::lock_guard<std::mutex> lock(mtx);
       for (uint64_t i = next_idx; i < log_.size(); i++) {
         raftpb::Entry *entry = req.add_entries();
         *entry = log_[i];
@@ -228,7 +252,7 @@ void Raft::send_heartbeats_() {
 
     raftpb::AppendEntriesReply resp;
     std::unique_ptr<grpc::ClientContext> ctx = this->create_context(peer_id);
-    grpc::Status status = peers_[peer_id]->AppendEntries(ctx.get(), req, &resp);
+    grpc::Status status = stub->AppendEntries(ctx.get(), req, &resp);
 
     if (!status.ok()) {
       continue;
@@ -244,7 +268,7 @@ void Raft::send_heartbeats_() {
         last_heartbeat_received_ = std::chrono::steady_clock::now();
         timer_cv_.notify_all();
       }
-      return;
+      continue;
     }
 
     {
@@ -252,7 +276,7 @@ void Raft::send_heartbeats_() {
 
       // stale reply check
       if (role_ != Role::Leader || current_term_ != term) {
-        return;
+        continue;
       }
 
       if (resp.success()) {
@@ -311,11 +335,6 @@ void Raft::send_heartbeats_() {
       }
     }
   }
-
-  {
-    std::lock_guard<std::mutex> lock(mtx);
-    last_heartbeat_sent_ = std::chrono::steady_clock::now();
-  }
 }
 
 void Raft::become_leader_locked_() {
@@ -330,6 +349,7 @@ void Raft::become_leader_locked_() {
 
   next_heartbeat_deadline_ = std::chrono::steady_clock::now(); // send ASAP
   timer_cv_.notify_all();
+  peer_cv_.notify_all();
 
   logger->info("ID {} became leader: term={}", id, current_term_);
 }
