@@ -110,56 +110,21 @@ public:
     (void)context;
     
     // RIFL cache check
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      auto it = rifl_.find(request->client_id());
-      if (it != rifl_.end() && request->seq_num() <= it->second.seq_num) {
-        response->set_status(it->second.cached_status);
-        return grpc::Status::OK;
-      }
-    }
-
-    // serialize
-    std::string data = "PUT|" + request->key() + "|" + request->value() + "|"
-                     + std::to_string(request->client_id()) + "|"
-                     + std::to_string(request->seq_num());
-
-    // propose to raft
-    rafty::ProposalResult proposal = raft_.propose(data);
-    if (!proposal.is_leader) {
-      response->set_status(kvpb::KV_NOTLEADER);
+    kvpb::KvStatus cached;
+    if (check_rifl(request->client_id(), request->seq_num(), cached)) {
+      response->set_status(cached);
       return grpc::Status::OK;
     }
 
-    // register promise at this index
-    std::future<ApplyNotification> fut;
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      std::promise<ApplyNotification> prom;
-      fut = prom.get_future();
-      pending_[proposal.index] = std::move(prom);
-    }
+    std::string data = serialize("PUT", request->key(), request->value(),
+                              request->client_id(), request->seq_num());
 
-    // wait for commit
-    if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
-      std::lock_guard<std::mutex> lock(mu_);
-      pending_.erase(proposal.index);
-      response->set_status(kvpb::KV_TIMEOUT);
-      return grpc::Status::OK;
-    }
-
-    // make sure this is our commit
-    ApplyNotification notif = fut.get();
-    std::string our_tag = std::to_string(request->client_id()) + "|"
-                          + std::to_string(request->seq_num());
-    if (notif.data.find(our_tag) == std::string::npos) {
-      response->set_status(kvpb::KV_TIMEOUT);
-      return grpc::Status::OK;
-    }
-    
-    // success
-    response->set_status(kvpb::KV_SUCCESS);
-    return grpc::Status::OK;
+    kvpb::KvStatus status;
+    std::string value;
+    grpc::Status s = propose_and_wait(data, request->client_id(),
+                                      request->seq_num(), status, value);
+    response->set_status(status);
+    return s;
   }
 
   grpc::Status Get(grpc::ServerContext *context,
@@ -175,14 +140,95 @@ public:
   grpc::Status Append(grpc::ServerContext *context,
                       const kvpb::AppendRequest *request,
                       kvpb::KvResponse *response) override {
-    // TODO (lab 3): implement
+    // lab 3
     (void)context;
-    (void)request;
-    response->set_status(kvpb::KV_TIMEOUT);
+
+    // RIFL cache check
+    kvpb::KvStatus cached;
+    if (check_rifl(request->client_id(), request->seq_num(), cached)) {
+      response->set_status(cached);
+      return grpc::Status::OK;
+    }
+
+    std::string data = serialize("APPEND", request->key(), request->value(),
+                                  request->client_id(), request->seq_num());
+
+    kvpb::KvStatus status;
+    std::string unused_value;
+    grpc::Status s = propose_and_wait(data, request->client_id(),
+                                      request->seq_num(), status, unused_value);
+    response->set_status(status);
+    return s;
+    }
+
+private:
+
+  // shared helper for put and append handlers
+  grpc::Status propose_and_wait(const std::string &data,
+                                uint64_t client_id,
+                                uint64_t seq_num,
+                                kvpb::KvStatus &out_status,
+                                std::string &out_value) {
+    // Propose to Raft
+    rafty::ProposalResult proposal = raft_.propose(data);
+    if (!proposal.is_leader) {
+      out_status = kvpb::KV_NOTLEADER;
+      return grpc::Status::OK;
+    }
+
+    // Register promise
+    std::future<ApplyNotification> fut;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      std::promise<ApplyNotification> prom;
+      fut = prom.get_future();
+      pending_[proposal.index] = std::move(prom);
+    }
+
+    // Wait for commit
+    if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
+      std::lock_guard<std::mutex> lock(mu_);
+      pending_.erase(proposal.index);
+      out_status = kvpb::KV_TIMEOUT;
+      return grpc::Status::OK;
+    }
+
+    // Verify it's ours
+    ApplyNotification notif = fut.get();
+    std::string our_tag = std::to_string(client_id) + "|"
+                          + std::to_string(seq_num);
+    if (notif.data.find(our_tag) == std::string::npos) {
+      out_status = kvpb::KV_TIMEOUT;
+      return grpc::Status::OK;
+    }
+
+    out_status = kvpb::KV_SUCCESS;
+    out_value  = notif.value;
     return grpc::Status::OK;
   }
 
-private:
+  std::string serialize(const std::string &op,
+                        const std::string &key,
+                        const std::string &value,
+                        uint64_t client_id,
+                        uint64_t seq_num) {
+    return op + "|" + key + "|" + value + "|"
+          + std::to_string(client_id) + "|"
+          + std::to_string(seq_num);
+  }
+
+  // returns true if duplicate, fills out_status with cached result
+  bool check_rifl(uint64_t client_id, uint64_t seq_num,
+                  kvpb::KvStatus &out_status) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = rifl_.find(client_id);
+    if (it != rifl_.end() && seq_num <= it->second.seq_num) {
+      out_status = it->second.cached_status;
+      return true;
+    }
+    return false;
+  }
+
   struct ApplyNotification {
     std::string data;
     std::string value;
