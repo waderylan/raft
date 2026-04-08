@@ -97,6 +97,11 @@ ProposalResult Raft::propose(const std::string &data) {
   result.index = log_.size() - 1;
 
   logger->info("Proposed: id={} index={} term={} data={}", id, result.index, result.term, data);
+
+  // Trigger immediate replication instead of waiting for heartbeat
+  next_heartbeat_deadline_ = std::chrono::steady_clock::now();
+  timer_cv_.notify_one();
+
   return result;
 }
 
