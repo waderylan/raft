@@ -120,9 +120,8 @@ public:
                               request->client_id(), request->seq_num());
 
     kvpb::KvStatus status;
-    std::string value;
     grpc::Status s = propose_and_wait(data, request->client_id(),
-                                      request->seq_num(), status, value);
+                                      request->seq_num(), status);
     response->set_status(status);
     return s;
   }
@@ -130,11 +129,27 @@ public:
   grpc::Status Get(grpc::ServerContext *context,
                    const kvpb::GetRequest *request,
                    kvpb::GetResponse *response) override {
-    // TODO (lab 3): implement
+    // lab 3
     (void)context;
-    (void)request;
-    response->set_status(kvpb::KV_TIMEOUT);
-    return grpc::Status::OK;
+
+    kvpb::KvStatus cached;
+    std::string cached_value;
+    if (check_rifl(request->client_id(), request->seq_num(), cached, &cached_value)) {
+      response->set_status(cached);
+      response->set_value(cached_value);
+      return grpc::Status::OK;
+    }
+
+    std::string data = serialize("GET", request->key(), "",
+                                  request->client_id(), request->seq_num());
+
+    kvpb::KvStatus status;
+    std::string value;
+    grpc::Status s = propose_and_wait(data, request->client_id(),
+                                      request->seq_num(), status, &value);
+    response->set_status(status);
+    response->set_value(value);
+    return s;
   }
 
   grpc::Status Append(grpc::ServerContext *context,
@@ -154,9 +169,8 @@ public:
                                   request->client_id(), request->seq_num());
 
     kvpb::KvStatus status;
-    std::string unused_value;
     grpc::Status s = propose_and_wait(data, request->client_id(),
-                                      request->seq_num(), status, unused_value);
+                                      request->seq_num(), status);
     response->set_status(status);
     return s;
     }
@@ -168,7 +182,7 @@ private:
                                 uint64_t client_id,
                                 uint64_t seq_num,
                                 kvpb::KvStatus &out_status,
-                                std::string &out_value) {
+                                std::string *out_value = nullptr) {
     // Propose to Raft
     rafty::ProposalResult proposal = raft_.propose(data);
     if (!proposal.is_leader) {
@@ -203,7 +217,7 @@ private:
     }
 
     out_status = kvpb::KV_SUCCESS;
-    out_value  = notif.value;
+    if (out_value) *out_value = notif.value;
     return grpc::Status::OK;
   }
 
@@ -217,13 +231,15 @@ private:
           + std::to_string(seq_num);
   }
 
-  // returns true if duplicate, fills out_status with cached result
+  // Check if this operation is a duplicate. Returns true if already applied
+  // fill out_status and out_value with the cached result
   bool check_rifl(uint64_t client_id, uint64_t seq_num,
-                  kvpb::KvStatus &out_status) {
+                  kvpb::KvStatus &out_status, std::string *out_value = nullptr) {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = rifl_.find(client_id);
     if (it != rifl_.end() && seq_num <= it->second.seq_num) {
       out_status = it->second.cached_status;
+      if (out_value) *out_value = it->second.cached_value;
       return true;
     }
     return false;
