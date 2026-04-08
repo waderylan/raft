@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <future>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -36,8 +38,54 @@ public:
   //   4. Notify the waiting RPC handler that its operation has committed
   // -----------------------------------------------------------------
   void on_apply(const rafty::ApplyResult &result) {
-    // TODO (lab 3): implement this.
-    (void)result;
+    std::string op, key, value;
+    uint64_t client_id = 0, seq_num = 0;
+
+    // Deserialize "OP|key|value|client_id|seq_num"
+    std::istringstream ss(result.data);
+    std::getline(ss, op, '|');
+    std::getline(ss, key, '|');
+    std::getline(ss, value, '|');
+    std::string tmp;
+    std::getline(ss, tmp, '|'); client_id = std::stoull(tmp);
+    std::getline(ss, tmp, '|'); seq_num = std::stoull(tmp);
+
+    std::string result_value;
+    kvpb::KvStatus status = kvpb::KV_SUCCESS;
+
+    std::lock_guard<std::mutex> lock(mu_);
+
+    // RIFL check for duplicate
+    auto it = rifl_.find(client_id);
+    if (it != rifl_.end() && seq_num <= it->second.seq_num) {
+      // Already applied — use cached result
+      result_value = it->second.cached_value;
+      status = it->second.cached_status;
+    } else {
+      // Apply to store
+      if (op == "PUT") {
+        store_[key] = value;
+      } else if (op == "APPEND") {
+        store_[key] += value;
+      } else if (op == "GET") {
+        auto sit = store_.find(key);
+        result_value = (sit != store_.end()) ? sit->second : "";
+      }
+      // Update RIFL cache
+      rifl_[client_id] = {seq_num, result_value, kvpb::KV_SUCCESS};
+    }
+
+    // Wake up waiting RPC handler
+    auto pit = pending_.find(result.index);
+    if (pit != pending_.end()) {
+      ApplyNotification notif;
+      notif.data = result.data;
+      notif.value = result_value;
+      notif.status = status;
+      pit->second.set_value(std::move(notif));
+      pending_.erase(pit);
+    }
+
   }
 
   // -----------------------------------------------------------------
@@ -58,10 +106,59 @@ public:
   grpc::Status Put(grpc::ServerContext *context,
                    const kvpb::PutRequest *request,
                    kvpb::KvResponse *response) override {
-    // TODO (lab 3): implement
+    // lab 3
     (void)context;
-    (void)request;
-    response->set_status(kvpb::KV_TIMEOUT);
+    
+    // RIFL cache check
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      auto it = rifl_.find(request->client_id());
+      if (it != rifl_.end() && request->seq_num() <= it->second.seq_num) {
+        response->set_status(it->second.cached_status);
+        return grpc::Status::OK;
+      }
+    }
+
+    // serialize
+    std::string data = "PUT|" + request->key() + "|" + request->value() + "|"
+                     + std::to_string(request->client_id()) + "|"
+                     + std::to_string(request->seq_num());
+
+    // propose to raft
+    rafty::ProposalResult proposal = raft_.propose(data);
+    if (!proposal.is_leader) {
+      response->set_status(kvpb::KV_NOTLEADER);
+      return grpc::Status::OK;
+    }
+
+    // register promise at this index
+    std::future<ApplyNotification> fut;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      std::promise<ApplyNotification> prom;
+      fut = prom.get_future();
+      pending_[proposal.index] = std::move(prom);
+    }
+
+    // wait for commit
+    if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
+      std::lock_guard<std::mutex> lock(mu_);
+      pending_.erase(proposal.index);
+      response->set_status(kvpb::KV_TIMEOUT);
+      return grpc::Status::OK;
+    }
+
+    // make sure this is our commit
+    ApplyNotification notif = fut.get();
+    std::string our_tag = std::to_string(request->client_id()) + "|"
+                          + std::to_string(request->seq_num());
+    if (notif.data.find(our_tag) == std::string::npos) {
+      response->set_status(kvpb::KV_TIMEOUT);
+      return grpc::Status::OK;
+    }
+    
+    // success
+    response->set_status(kvpb::KV_SUCCESS);
     return grpc::Status::OK;
   }
 
@@ -86,23 +183,24 @@ public:
   }
 
 private:
-  rafty::Raft &raft_;
+  struct ApplyNotification {
+    std::string data;
+    std::string value;
+    kvpb::KvStatus status;
+  };
 
-  // TODO (lab 3): add your state here. Consider:
-  //
-  // - std::unordered_map<std::string, std::string> store_;
-  //       The in-memory key/value map.
-  //
-  // - RIFL tables: track (client_id -> highest seq_num) and cache the
-  //   response for the last operation per client, so that duplicate
-  //   requests return the cached result instead of re-executing.
-  //
-  // - A notification mechanism (e.g., std::condition_variable or
-  //   std::promise/std::future per pending request) so that RPC handler
-  //   threads can wait for their specific log entry to be committed
-  //   and applied via on_apply().
-  //
-  // - std::mutex for protecting shared state.
+  struct RiflEntry {
+    uint64_t seq_num;
+    std::string cached_value;
+    kvpb::KvStatus cached_status;
+  };
+
+  rafty::Raft &raft_;
+  std::mutex mu_;
+  std::unordered_map<std::string, std::string> store_;
+  std::unordered_map<uint64_t, RiflEntry> rifl_;
+  std::unordered_map<uint64_t, std::promise<ApplyNotification>> pending_;
+
 };
 
 } // namespace kv
