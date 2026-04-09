@@ -109,6 +109,13 @@ ProposalResult Raft::propose_sync(const std::string &data) {
   // TODO: lab 3
 }
 
+bool Raft::has_valid_lease() const {
+  std::lock_guard<std::mutex> lock(mtx);
+  return role_ == Role::Leader &&
+         std::chrono::steady_clock::now() < lease_expiry_ &&
+         commit_index_ == log_.size() - 1;  // could also use last_applied here
+}
+
 void Raft::timer_loop_() {
   std::unique_lock<std::mutex> lock(mtx);
 
@@ -197,6 +204,8 @@ void Raft::send_heartbeats_() {
 
   logger->info("Heartbeat send: term={} to {} peers", term, peers_.size());
 
+  std::atomic<uint64_t> ack_count{1}; // count self
+
   for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
     const uint64_t peer_id = peer.first;
 
@@ -246,6 +255,7 @@ void Raft::send_heartbeats_() {
         current_term_ = resp.term();
         role_ = Role::Follower;
         voted_for_.reset();
+        lease_expiry_ = std::chrono::steady_clock::time_point::min();
         last_heartbeat_received_ = std::chrono::steady_clock::now();
         timer_cv_.notify_all();
       }
@@ -266,6 +276,7 @@ void Raft::send_heartbeats_() {
           next_index_[peer_id] = next_idx + req.entries_size();
           match_index_[peer_id] = next_index_[peer_id] - 1;
         }
+        ack_count++;
 
         // find highest index replicated on at least the majority of nodes
         uint64_t new_commit_index = commit_index_;
@@ -316,6 +327,15 @@ void Raft::send_heartbeats_() {
       }
     }
   }
+  // Update lease if majority acknowledged
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (ack_count >= required_majority_) {
+      lease_expiry_ = std::chrono::steady_clock::now() + election_timeout_min_;
+    } else {
+      lease_expiry_ = std::chrono::steady_clock::time_point::min();
+    }
+  }
 
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -326,6 +346,7 @@ void Raft::send_heartbeats_() {
 void Raft::become_leader_locked_() {
   role_ = Role::Leader;
   votes_received_ = 0;
+  lease_expiry_ = std::chrono::steady_clock::time_point::min();
 
   // initialize leader-only volatile state
   for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
@@ -397,7 +418,7 @@ void Raft::start_election_() {
         role_ = Role::Follower;
         voted_for_.reset();
         votes_received_ = 0;
-
+        lease_expiry_ = std::chrono::steady_clock::time_point::min();
         last_heartbeat_received_ = std::chrono::steady_clock::now();
         timer_cv_.notify_all();
         continue;

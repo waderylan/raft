@@ -54,6 +54,9 @@ public:
   bool is_dead() const;
   void kill();
 
+  // performance optimization
+  bool has_valid_lease() const;
+
 private:
   // WARN: do not modify `create_context` and `apply`.
 
@@ -117,6 +120,9 @@ private:
   std::chrono::steady_clock::time_point last_heartbeat_received_;
   std::chrono::steady_clock::time_point last_heartbeat_sent_;
   std::chrono::steady_clock::time_point next_heartbeat_deadline_;
+
+  // performance optimization
+  std::chrono::steady_clock::time_point lease_expiry_;
 
   // threading
   std::atomic<bool> running_{false};

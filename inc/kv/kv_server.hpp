@@ -140,6 +140,25 @@ public:
       return grpc::Status::OK;
     }
 
+    if (raft_.has_valid_lease()) {
+      std::lock_guard<std::mutex> lock(mu_);
+
+      // Look up the current value from local store
+      auto it = store_.find(request->key());
+      std::string val = (it != store_.end()) ? it->second : "";
+
+      // Cache the result so duplicate requests return immediately without hitting Raft
+      RiflEntry entry;
+      entry.seq_num = request->seq_num();
+      entry.cached_value = val;
+      entry.cached_status = kvpb::KV_SUCCESS;
+      rifl_[request->client_id()] = entry;
+
+      response->set_status(kvpb::KV_SUCCESS);
+      response->set_value(val);
+      return grpc::Status::OK;
+    }
+
     std::string data = serialize("GET", request->key(), "",
                                   request->client_id(), request->seq_num());
 
