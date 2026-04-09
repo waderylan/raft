@@ -67,7 +67,10 @@ private:
 
   void timer_loop_();
   std::chrono::milliseconds rand_election_timeout_() const;
+
   void send_heartbeats_();
+  void send_to_peer_(uint64_t peer_id, uint64_t term, std::atomic<uint64_t> &ack_count);
+  
   void start_election_();
   void become_leader_locked_();
 

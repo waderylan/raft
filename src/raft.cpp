@@ -2,6 +2,7 @@
 #include "common/utils/rand_gen.hpp"
 #include "raft.pb.h"
 #include <chrono>
+#include <future>
 #include <mutex>
 #include "rafty/raft.hpp"
 #ifdef TRACING
@@ -209,127 +210,18 @@ void Raft::send_heartbeats_() {
 
   std::atomic<uint64_t> ack_count{1}; // count self
 
-  for (const std::pair<const uint64_t, RaftServiceStub> &peer : peers_) {
+  // Launch all peer RPCs concurrently so total replication latency is max(peer_latencies) instead of sum(peer_latencies).
+  std::vector<std::future<void>> peer_futures;
+  peer_futures.reserve(peers_.size());
+  for (const auto &peer : peers_) {
     const uint64_t peer_id = peer.first;
-
-    uint64_t next_idx = 0;
-    uint64_t prev_log_index = 0;
-    uint64_t prev_log_term = 0;
-    uint64_t leader_commit = 0;
-
-    {
-      std::lock_guard<std::mutex> lock(mtx);
-      if (role_ != Role::Leader) {
-        return;
-      }
-      next_idx = next_index_[peer_id];
-      prev_log_index = next_idx - 1;
-      prev_log_term = log_[prev_log_index].term();
-      leader_commit = commit_index_;
-    }
-
-    raftpb::AppendEntriesRequest req;
-    req.set_term(term);
-    req.set_leaderid(id);
-    req.set_prevlogindex(prev_log_index);
-    req.set_prevlogterm(prev_log_term);
-    req.set_leadercommit(leader_commit);
-
-    {
-      std::lock_guard<std::mutex> lock(mtx);
-      for (uint64_t i = next_idx; i < log_.size(); i++) {
-        raftpb::Entry *entry = req.add_entries();
-        *entry = log_[i];
-      }
-    }
-
-    raftpb::AppendEntriesReply resp;
-    std::unique_ptr<grpc::ClientContext> ctx = this->create_context(peer_id);
-    grpc::Status status = peers_[peer_id]->AppendEntries(ctx.get(), req, &resp);
-
-    if (!status.ok()) {
-      continue;
-    }
-
-    if (resp.term() > term) {
-      // Response has higher term, stand down
-      std::lock_guard<std::mutex> lock(mtx);
-      if (resp.term() > current_term_) {
-        current_term_ = resp.term();
-        role_ = Role::Follower;
-        voted_for_.reset();
-        lease_expiry_ = std::chrono::steady_clock::time_point::min();
-        last_heartbeat_received_ = std::chrono::steady_clock::now();
-        timer_cv_.notify_all();
-      }
-      return;
-    }
-
-    {
-      std::unique_lock<std::mutex> lock(mtx);
-
-      // stale reply check
-      if (role_ != Role::Leader || current_term_ != term) {
-        return;
-      }
-
-      if (resp.success()) {
-        if (req.entries_size() > 0) {
-          // update next and match index for this peer only if we actually sent data
-          next_index_[peer_id] = next_idx + req.entries_size();
-          match_index_[peer_id] = next_index_[peer_id] - 1;
-        }
-        ack_count++;
-
-        // find highest index replicated on at least the majority of nodes
-        uint64_t new_commit_index = commit_index_;
-        for (uint64_t n = log_.size() - 1; n > commit_index_; n--) {
-          uint64_t replication_count = 1; // count self
-
-          // loop through peers and see who is caught up to n
-          for (const std::pair<const uint64_t, uint64_t> &entry : match_index_) {
-            if (entry.second >= n) {
-              replication_count++;
-            }
-          }
-          // done if we have the majority
-          if (replication_count >= required_majority_) {
-            new_commit_index = n;
-            break;
-          }
-        }
-
-        // only commit if new_commit_index is newer and belongs to current term
-        if (new_commit_index > commit_index_ && log_[new_commit_index].term() == current_term_) {
-          commit_index_ = new_commit_index;
-
-          // collect all newly committed entries
-          std::vector<ApplyResult> apply_batch; // so that apply is not called when the lock is held
-          while (last_applied_ < commit_index_) {
-            last_applied_++;
-
-            ApplyResult result;
-            result.valid = true;
-            result.index = last_applied_;
-            result.data = log_[last_applied_].command();
-
-            apply_batch.push_back(result);
-          }
-          // unlock and apply all results in the batch
-          lock.unlock();
-          for (const ApplyResult &result : apply_batch) {
-            apply(result);
-          }
-          lock.lock();
-        }
-      } else {
-        // log inconsistency, back up one step and retry next heartbeat
-        if (next_index_[peer_id] > 1) {
-          next_index_[peer_id]--;
-        }
-      }
-    }
+    peer_futures.push_back(std::async(std::launch::async, [this, peer_id, term, &ack_count] {
+      send_to_peer_(peer_id, term, ack_count);
+    }));
   }
+  // Wait for all peers before updating lease
+  for (auto &f : peer_futures) f.get();
+
   // Update lease if majority acknowledged
   {
     std::lock_guard<std::mutex> lock(mtx);
@@ -343,6 +235,103 @@ void Raft::send_heartbeats_() {
   {
     std::lock_guard<std::mutex> lock(mtx);
     last_heartbeat_sent_ = std::chrono::steady_clock::now();
+  }
+}
+
+void Raft::send_to_peer_(uint64_t peer_id, uint64_t term, std::atomic<uint64_t> &ack_count) {
+  uint64_t next_idx = 0;
+  uint64_t prev_log_index = 0;
+  uint64_t prev_log_term = 0;
+  uint64_t leader_commit = 0;
+
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (role_ != Role::Leader) return;
+    next_idx = next_index_[peer_id];
+    prev_log_index = next_idx - 1;
+    prev_log_term = log_[prev_log_index].term();
+    leader_commit = commit_index_;
+  }
+
+  raftpb::AppendEntriesRequest req;
+  req.set_term(term);
+  req.set_leaderid(id);
+  req.set_prevlogindex(prev_log_index);
+  req.set_prevlogterm(prev_log_term);
+  req.set_leadercommit(leader_commit);
+
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    for (uint64_t i = next_idx; i < log_.size(); i++) {
+      raftpb::Entry *entry = req.add_entries();
+      *entry = log_[i];
+    }
+  }
+
+  raftpb::AppendEntriesReply resp;
+  std::unique_ptr<grpc::ClientContext> ctx = this->create_context(peer_id);
+  grpc::Status status = peers_[peer_id]->AppendEntries(ctx.get(), req, &resp);
+
+  if (!status.ok()) return;
+
+  if (resp.term() > term) {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (resp.term() > current_term_) {
+      current_term_ = resp.term();
+      role_ = Role::Follower;
+      voted_for_.reset();
+      lease_expiry_ = std::chrono::steady_clock::time_point::min();
+      last_heartbeat_received_ = std::chrono::steady_clock::now();
+      timer_cv_.notify_all();
+    }
+    return;
+  }
+
+  {
+    std::unique_lock<std::mutex> lock(mtx);
+
+    if (role_ != Role::Leader || current_term_ != term) return;
+
+    if (resp.success()) {
+      if (req.entries_size() > 0) {
+        next_index_[peer_id] = next_idx + req.entries_size();
+        match_index_[peer_id] = next_index_[peer_id] - 1;
+      }
+      ack_count++;
+
+      uint64_t new_commit_index = commit_index_;
+      for (uint64_t n = log_.size() - 1; n > commit_index_; n--) {
+        uint64_t replication_count = 1;
+        for (const auto &entry : match_index_) {
+          if (entry.second >= n) replication_count++;
+        }
+        if (replication_count >= required_majority_) {
+          new_commit_index = n;
+          break;
+        }
+      }
+
+      if (new_commit_index > commit_index_ && log_[new_commit_index].term() == current_term_) {
+        commit_index_ = new_commit_index;
+
+        std::vector<ApplyResult> apply_batch;
+        while (last_applied_ < commit_index_) {
+          last_applied_++;
+          ApplyResult result;
+          result.valid = true;
+          result.index = last_applied_;
+          result.data = log_[last_applied_].command();
+          apply_batch.push_back(result);
+        }
+        lock.unlock();
+        for (const ApplyResult &result : apply_batch) {
+          apply(result);
+        }
+        lock.lock();
+      }
+    } else {
+      if (next_index_[peer_id] > 1) next_index_[peer_id]--;
+    }
   }
 }
 
