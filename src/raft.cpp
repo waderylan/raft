@@ -111,9 +111,12 @@ ProposalResult Raft::propose_sync(const std::string &data) {
 
 bool Raft::has_valid_lease() const {
   std::lock_guard<std::mutex> lock(mtx);
-  return role_ == Role::Leader &&
-         std::chrono::steady_clock::now() < lease_expiry_ &&
-         commit_index_ == log_.size() - 1;  // could also use last_applied here
+
+  return role_ == Role::Leader
+      && std::chrono::steady_clock::now() < lease_expiry_
+      && commit_index_ > 0
+      && log_[commit_index_].term() == current_term_
+      && last_applied_ >= commit_index_;
 }
 
 void Raft::timer_loop_() {
@@ -353,6 +356,11 @@ void Raft::become_leader_locked_() {
     next_index_[peer.first] = log_.size();
     match_index_[peer.first] = 0;
   }
+
+  raftpb::Entry noop;
+  noop.set_term(current_term_);
+  noop.set_command("NOOP||||||");  // deserializes harmlessly in on_apply
+  log_.push_back(noop);
 
   next_heartbeat_deadline_ = std::chrono::steady_clock::now(); // send ASAP
   timer_cv_.notify_all();

@@ -41,6 +41,14 @@ public:
     std::string op, key, value;
     uint64_t client_id = 0, seq_num = 0;
 
+    // No-op entries are internal to Raft and have no waiting RPC handler;
+    // erase defensively in case a prior leader left a stale promise at this index.
+    if (result.data.starts_with("NOOP")) {
+        std::lock_guard<std::mutex> lock(mu_);
+        pending_.erase(result.index);
+        return;
+    }
+
     // Deserialize "OP|key|value|client_id|seq_num"
     std::istringstream ss(result.data);
     std::getline(ss, op, '|');
