@@ -117,9 +117,9 @@ private:
   std::unordered_map<uint64_t, uint64_t> match_index_; // per peer, what index is confirmed replicated
 
   // timing
-  std::chrono::milliseconds heartbeat_interval_{100};
-  std::chrono::milliseconds election_timeout_min_{150};
-  std::chrono::milliseconds election_timeout_max_{300};
+  std::chrono::milliseconds heartbeat_interval_{2};
+  std::chrono::milliseconds election_timeout_min_{20};
+  std::chrono::milliseconds election_timeout_max_{40};
   std::chrono::steady_clock::time_point last_heartbeat_received_;
   std::chrono::steady_clock::time_point last_heartbeat_sent_;
   std::chrono::steady_clock::time_point next_heartbeat_deadline_;
