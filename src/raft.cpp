@@ -109,7 +109,7 @@ ProposalResult Raft::propose(const std::string &data) {
 }
 
 ProposalResult Raft::propose_sync(const std::string &data) {
-  // TODO: lab 3
+  return propose(data);
 }
 
 bool Raft::has_valid_lease() const {
