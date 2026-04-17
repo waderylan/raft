@@ -83,15 +83,18 @@ public:
       rifl_[client_id] = {seq_num, result_value, kvpb::KV_SUCCESS};
     }
 
+    ApplyNotification notif;
+    notif.data = result.data;
+    notif.value = result_value;
+    notif.status = status;
+
     // Wake up waiting RPC handler
     auto pit = pending_.find(result.index);
     if (pit != pending_.end()) {
-      ApplyNotification notif;
-      notif.data = result.data;
-      notif.value = result_value;
-      notif.status = status;
       pit->second.set_value(std::move(notif));
       pending_.erase(pit);
+    } else {
+      ready_notifications_[result.index] = std::move(notif);
     }
 
   }
@@ -221,9 +224,17 @@ private:
     std::future<ApplyNotification> fut;
     {
       std::lock_guard<std::mutex> lock(mu_);
-      std::promise<ApplyNotification> prom;
-      fut = prom.get_future();
-      pending_[proposal.index] = std::move(prom);
+      auto rit = ready_notifications_.find(proposal.index);
+      if (rit != ready_notifications_.end()) {
+        std::promise<ApplyNotification> prom;
+        fut = prom.get_future();
+        prom.set_value(std::move(rit->second));
+        ready_notifications_.erase(rit);
+      } else {
+        std::promise<ApplyNotification> prom;
+        fut = prom.get_future();
+        pending_[proposal.index] = std::move(prom);
+      }
     }
 
     // Wait for commit
@@ -289,6 +300,7 @@ private:
   std::unordered_map<std::string, std::string> store_;
   std::unordered_map<uint64_t, RiflEntry> rifl_;
   std::unordered_map<uint64_t, std::promise<ApplyNotification>> pending_;
+  std::unordered_map<uint64_t, ApplyNotification> ready_notifications_;
 
 };
 
