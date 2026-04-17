@@ -31,7 +31,7 @@ grpc::Status RaftServiceImpl::AppendEntries(grpc::ServerContext *,
   raft_->last_heartbeat_received_ = std::chrono::steady_clock::now();
   raft_->timer_cv_.notify_all();
 
-  raft_->logger->info("Heartbeat received: from leader={} req_term={} my_term={}", req->leaderid(),
+  raft_->logger->debug("Heartbeat received: from leader={} req_term={} my_term={}", req->leaderid(),
                       req->term(), raft_->current_term_);
 
   rep->set_term(raft_->current_term_);
@@ -135,7 +135,7 @@ grpc::Status RaftServiceImpl::RequestVote(grpc::ServerContext *,
     rep->set_term(raft_->current_term_);
     rep->set_votegranted(true);
 
-    raft_->logger->info("Node {} Voted: candidate={} term={}", raft_->id, candidate_id,
+    raft_->logger->debug("Node {} Voted: candidate={} term={}", raft_->id, candidate_id,
                         raft_->current_term_);
     return grpc::Status::OK;
   } else {

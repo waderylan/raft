@@ -30,7 +30,7 @@ inline void Raft::start_server() {
   builder.RegisterService(service_.get()); /* replace nullptr with actual gRPC service */
 
   std::unique_ptr<Server> server(builder.BuildAndStart());
-  logger->info("Raft server {} listening on {}", id, listening_addr);
+  logger->debug("Raft server {} listening on {}", id, listening_addr);
 
   this->server_ = std::move(server);
 
@@ -54,7 +54,7 @@ inline void Raft::connect_peers() {
               50); // 100ms initial backoff
 
   for (const auto &peer_addr : peer_addrs) {
-    logger->info("Connecting to peer {} at {}", peer_addr.first, peer_addr.second);
+    logger->debug("Connecting to peer {} at {}", peer_addr.first, peer_addr.second);
     std::vector<std::unique_ptr<ClientInterceptorFactoryInterface>> interceptor_creators;
     interceptor_creators.push_back(std::make_unique<ByteCountingInterceptorFactory>());
     interceptor_creators.push_back(std::make_unique<NetInterceptorFactory>());

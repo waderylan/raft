@@ -83,7 +83,7 @@ ProposalResult Raft::propose(const std::string &data) {
 
   if (!result.is_leader) {
     // in real-world implementation this would forward to a leader
-    logger->info("Propose rejected: id={} not leader (term={})", id, current_term_);
+    logger->debug("Propose rejected: id={} not leader (term={})", id, current_term_);
     result.term = current_term_;
     result.index = 0;
     return result;
@@ -97,7 +97,7 @@ ProposalResult Raft::propose(const std::string &data) {
   result.term = current_term_;
   result.index = log_.size() - 1;
 
-  logger->info("Proposed: id={} index={} term={} data={}", id, result.index, result.term, data);
+  logger->debug("Proposed: id={} index={} term={} data={}", id, result.index, result.term, data);
 
   
   // Trigger immediate replication instead of waiting for heartbeat
@@ -130,7 +130,7 @@ void Raft::timer_loop_() {
 
   while (!dead.load() && !stop_.load()) {
 
-    logger->info("TIMER: role={} term={}",
+    logger->debug("TIMER: role={} term={}",
                  (role_ == Role::Leader ? "L" : (role_ == Role::Candidate ? "C" : "F")),
                  current_term_);
 
@@ -174,7 +174,7 @@ void Raft::timer_loop_() {
       }
 
       if (now >= election_deadline) {
-        logger->info("Election timeout reached (term={})", current_term_);
+        logger->debug("Election timeout reached (term={})", current_term_);
 
         lock.unlock();
         start_election_();
@@ -208,7 +208,7 @@ void Raft::send_heartbeats_() {
     term = current_term_;
   }
 
-  logger->info("Heartbeat send: term={} to {} peers", term, peers_.size());
+  logger->debug("Heartbeat send: term={} to {} peers", term, peers_.size());
 
   std::atomic<uint64_t> ack_count{1}; // count self
 
@@ -356,7 +356,7 @@ void Raft::become_leader_locked_() {
   next_heartbeat_deadline_ = std::chrono::steady_clock::now(); // send ASAP
   timer_cv_.notify_all();
 
-  logger->info("ID {} became leader: term={}", id, current_term_);
+  logger->debug("ID {} became leader: term={}", id, current_term_);
 }
 
 void Raft::start_election_() {
@@ -380,7 +380,7 @@ void Raft::start_election_() {
     last_log_index = log_.size() - 1;
     last_log_term = log_.back().term();
 
-    logger->info("ID {} started election: term={} voted_for={} votes={}", id, current_term_, id,
+    logger->debug("ID {} started election: term={} voted_for={} votes={}", id, current_term_, id,
                  votes_received_);
   }
 
@@ -426,7 +426,7 @@ void Raft::start_election_() {
       if (rep.votegranted()) {
         votes_received_ += 1;
 
-        logger->info("Vote granted by {}: votes={}, required majority={}, term={}", peer_id,
+        logger->debug("Vote granted by {}: votes={}, required majority={}, term={}", peer_id,
                      votes_received_, required_majority_, current_term_);
 
         if (votes_received_ >= required_majority_) {
